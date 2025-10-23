@@ -249,7 +249,7 @@ class WalletLedger:
 # ---------- High-level pipeline ----------
 def build_leaderboard():
     print("Scanning pump.fun signatures...")
-    pump_txs = find_pumpfun_txs(PUMPFUN_PROGRAMS, hours_back=RECENT_WINDOW_HOURS)
+    pump_txs = find_pumpfun_txs_multithread(PUMPFUN_PROGRAMS, hours_back=RECENT_WINDOW_HOURS)
     print(f"pump.fun tx signatures found: {len(pump_txs)}")
 
     # record buys: wallet -> list of {mint, amount, cost_usd, time}
@@ -328,14 +328,14 @@ def build_leaderboard():
                     tx_results.append(tx)
 
         for tx in tx_results:
-            sig = s["signature"]
-            try:
-                tx = get_transaction(sig)
-                time.sleep(SLEEP_BETWEEN_RPC)
-            except Exception:
-                continue
-            if not tx:
-                continue
+            #sig = s["signature"]
+            #try:
+            #    tx = get_transaction(sig)
+            #    time.sleep(SLEEP_BETWEEN_RPC)
+            #except Exception:
+            #    continue
+            #if not tx:
+            #    continue
             # Skip if tx older than lookahead window relative to first buy of wallet
             first_buy_time = None
             # compute earliest buy time recorded (if none, skip)
@@ -423,7 +423,7 @@ def build_leaderboard():
     print(f"Leaderboard written to {OUTPUT_CSV} ({len(rows)} wallets)")
 
 # ---------- Utility: find pump.fun signatures ----------
-def find_pumpfun_txs(program_ids, hours_back=7):
+def find_pumpfun_txs_singlethread(program_ids, hours_back=7):
     results = []
     cutoff = datetime.utcnow() - timedelta(hours=hours_back)
     cutoff_unix = int(cutoff.timestamp())
@@ -447,9 +447,9 @@ def find_pumpfun_txs(program_ids, hours_back=7):
                 break
             before = sigs[-1]["signature"]
             print(f"Fetched {len(results)} pump.fun signatures so far out of {len(program_ids)} total...")
-            #if (len(results) >= int(os.getenv("PUMPFUN_MAX_SIGS", 1000000))):
-            #    print("Reached max sigs limit, stopping fetch.")
-            #    break
+            if (len(results) >= int(os.getenv("PUMPFUN_MAX_SIGS", 1000000))):
+                print("Reached max sigs limit, stopping fetch.")
+                break
     # dedupe
     uniq = {}
     for r in results:
@@ -457,8 +457,8 @@ def find_pumpfun_txs(program_ids, hours_back=7):
     return list(uniq.values())
 
 
-def find_pumpfun_txs_multithread(program_ids, hours_back=7):
-    cutoff = datetime.utcnow() - timedelta(days=days_back)
+def find_pumpfun_txs_multithread(program_ids, hours_back=7, max_workers=3):
+    cutoff = datetime.utcnow() - timedelta(hours=hours_back)
     cutoff_unix = int(cutoff.timestamp())
     all_results = []
 
@@ -481,17 +481,26 @@ def find_pumpfun_txs_multithread(program_ids, hours_back=7):
                 local_results.append({"signature": s["signature"], "blockTime": bt, "program": prog})
             if not sigs or len(sigs) < 1000:
                 break
+            print (len(local_results))
+            if (len(local_results) >= int(os.getenv("PUMPFUN_MAX_SIGS", 1000000))):
+                print("Reached max sigs limit, stopping fetch.")
+                break
             before = sigs[-1]["signature"]
         return local_results
 
     # --- Multithreaded execution ---
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [executor.submit(fetch_signatures_for_program, prog) for prog in program_ids]
+        print('len futures is', len(futures))
         for future in as_completed(futures):
             try:
                 res = future.result()
                 if res:
                     all_results.extend(res)
+                print (len(all_results))
+                if (len(all_results) >= int(os.getenv("PUMPFUN_MAX_SIGS", 1000000))):
+                    print("REACHED max sigs limit, stopping fetch.")
+                    break
             except Exception as e:
                 print("Error in signature fetch thread:", e)
 
@@ -499,9 +508,11 @@ def find_pumpfun_txs_multithread(program_ids, hours_back=7):
     uniq = {r["signature"]: r for r in all_results}
     results = list(uniq.values())
 
-    print(f"Fetched {len(results)} pump.fun tx signatures from {len(program_ids)} program IDs.")
     return results
 
 
 if __name__ == "__main__":
     build_leaderboard()
+
+
+
